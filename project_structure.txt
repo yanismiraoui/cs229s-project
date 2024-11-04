@@ -1,0 +1,16 @@
+nl2bash/
+├── data/
+│   ├── raw/                  # Original datasets
+│   └── processed/            # Processed datasets
+├── models/
+│   ├── trainer.py            # Training logic
+│   ├── tokenizer.py          # Tokenization utilities
+│   └── model.py              # Model architecture
+├── utils/
+│   ├── metrics.py            # Evaluation metrics
+│   ├── preprocessing.py      # Data preprocessing
+│   └── optimization.py       # Model optimization utilities
+├── configs/
+│   └── config.yaml           # Configuration parameters
+├── requirements.txt          # Project dependencies
+└── README.md                 # Project documentation 

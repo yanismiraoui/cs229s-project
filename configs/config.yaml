@@ -1,0 +1,28 @@
+model:
+  base_model: "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"  # or other small models
+  max_length: 128
+  quantization:
+    enabled: true
+    bits: 8
+  pruning:
+    enabled: true
+    target_sparsity: 0.3
+
+training:
+  batch_size: 32
+  learning_rate: 2e-5
+  num_epochs: 10
+  warmup_steps: 500
+  gradient_accumulation_steps: 4
+
+data:
+  natural_language_file: "data/natural_language.txt"
+  command_file: "data/cmd.txt"
+  max_source_length: 64
+  max_target_length: 64
+  train_size: 0.8
+  val_size: 0.1
+
+evaluation:
+  batch_size: 32
+  pretrained_path: "path/to/pretrained/model.pth"  # Update this with your pretrained model path
