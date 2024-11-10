@@ -9,6 +9,7 @@ from datetime import datetime
 from fvcore.nn import FlopCountAnalysis
 import json
 import pathlib
+from torch.nn import functional as F
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,9 +33,28 @@ def prepare_input(text, tokenizer, max_length):
     )
     return inputs
 
+def compute_similarity_loss(hidden_states1, hidden_states2, attention_mask=None):
+    """Compute cosine similarity between hidden states"""
+    # Get the last hidden states
+    last_hidden1 = hidden_states1[:, -1, :]
+    last_hidden2 = hidden_states2[:, -1, :]
+    
+    # Normalize the vectors
+    last_hidden1 = F.normalize(last_hidden1, p=2, dim=1)
+    last_hidden2 = F.normalize(last_hidden2, p=2, dim=1)
+    
+    # Compute cosine similarity
+    similarity = torch.sum(last_hidden1 * last_hidden2, dim=1)
+    
+    # Convert to loss (1 - similarity)
+    similarity_loss = 1 - similarity.mean()
+    
+    return similarity_loss
+
 def evaluate_model(model, tokenizer, test_data, device, config):
     model.eval()
     total_loss = 0
+    total_similarity_loss = 0
     total_flops = 0
     start_time = time.time()
     batch_size = config['evaluation']['batch_size']
@@ -51,7 +71,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             
             batch_texts = test_data[i:i + batch_size]
             
-            # Process the entire batch at once instead of individual examples
+            # Process the entire batch at once
             prompts = [f"<|assistant|>{text}<|user|>" for text in batch_texts]
             batch_inputs = tokenizer(
                 prompts,
@@ -70,14 +90,32 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             batch_flops = flops.total()
             total_flops += batch_flops
             
+            # Get model outputs with hidden states
             outputs = model(
                 input_ids=input_ids, 
                 attention_mask=attention_mask,
-                labels=input_ids  # Using input_ids as labels for calculating loss
+                labels=input_ids,
+                output_hidden_states=True  # Get hidden states
             )
             
             loss = outputs.loss
+            
+            # Compute similarity loss between consecutive layers
+            hidden_states = outputs.hidden_states
+            similarity_losses = []
+            for j in range(len(hidden_states)-1):
+                sim_loss = compute_similarity_loss(
+                    hidden_states[j],
+                    hidden_states[j+1],
+                    attention_mask
+                )
+                similarity_losses.append(sim_loss)
+            
+            # Average similarity loss across layers
+            avg_similarity_loss = torch.stack(similarity_losses).mean()
+            
             total_loss += loss.item()
+            total_similarity_loss += avg_similarity_loss.item()
             
             # Calculate time estimates
             batch_time = time.time() - batch_start_time
@@ -86,13 +124,14 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             remaining_batches = num_batches - current_batch
             estimated_time_remaining = remaining_batches * avg_time_per_batch
             
-            # Measure resources during evaluation
+            # Measure resources and log
             cpu_percent, memory_used = get_system_resources()
             logger.info(
                 f"Batch {current_batch}/{num_batches} "
                 f"({(current_batch/num_batches)*100:.1f}%): "
                 f"CPU: {cpu_percent}%, Mem: {memory_used:.2f}MB, "
-                f"Loss: {loss.item():.4f}, FLOPS: {batch_flops/1e9:.2f}G\n"
+                f"Loss: {loss.item():.4f}, Sim Loss: {avg_similarity_loss.item():.4f}, "
+                f"FLOPS: {batch_flops/1e9:.2f}G\n"
                 f"Time: {batch_time:.2f}s/batch, "
                 f"ETA: {estimated_time_remaining/60:.1f}min remaining"
             )
@@ -100,10 +139,12 @@ def evaluate_model(model, tokenizer, test_data, device, config):
     end_time = time.time()
     wall_time = end_time - start_time
     avg_loss = total_loss * batch_size / len(test_data)
+    avg_similarity_loss = total_similarity_loss * batch_size / len(test_data)
     avg_flops = total_flops / len(test_data)
     
     return {
         'avg_loss': avg_loss,
+        'avg_similarity_loss': avg_similarity_loss,
         'wall_time': wall_time,
         'total_flops': total_flops,
         'avg_flops': avg_flops
@@ -197,6 +238,7 @@ def main():
         },
         "metrics": {
             "average_loss": float(results['avg_loss']),
+            "average_similarity_loss": float(results['avg_similarity_loss']),
             "wall_time_seconds": float(results['wall_time']),
             "total_memory_mb": float(memory_used),
             "total_flops_g": float(results['total_flops']/1e9),
@@ -224,6 +266,7 @@ def main():
     logger.info(f"Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}")
     logger.info(f"Pruning: {'Enabled (sparsity ' + str(config['model']['pruning']['target_sparsity']) + ')' if config['model']['pruning']['enabled'] else 'Disabled'}")
     logger.info(f"Average Loss: {results['avg_loss']:.4f}")
+    logger.info(f"Average Similarity Loss: {results['avg_similarity_loss']:.4f}")
     logger.info(f"Wall Time: {results['wall_time']:.2f} seconds")
     logger.info(f"Total Memory Used: {memory_used:.2f} MB")
     logger.info(f"Total FLOPS: {results['total_flops']/1e9:.2f}G")
