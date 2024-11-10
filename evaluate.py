@@ -7,6 +7,8 @@ import yaml
 import logging
 from datetime import datetime
 from fvcore.nn import FlopCountAnalysis
+import json
+import pathlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -169,33 +171,63 @@ def main():
     end_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
     memory_used = end_memory - start_memory
     
-    # Log results
-    logger.info(f"\nEvaluation Results:")
+    # Create results directory if it doesn't exist
+    results_dir = pathlib.Path("results")
+    results_dir.mkdir(exist_ok=True)
+    
+    # Prepare results dictionary
+    results_dict = {
+        "model": {
+            "name": model_name,
+            "configuration": {
+                "quantization": {
+                    "enabled": config['model']['quantization']['enabled'],
+                    "bits": config['model']['quantization']['bits'] if config['model']['quantization']['enabled'] else None
+                },
+                "pruning": {
+                    "enabled": config['model']['pruning']['enabled'],
+                    "target_sparsity": config['model']['pruning']['target_sparsity'] if config['model']['pruning']['enabled'] else None
+                }
+            }
+        },
+        "data": {
+            "eval_fraction": config['data'].get('eval_size', 1.0),
+            "num_test_examples": len(test_data),
+            "total_examples_available": len(test_data) / config['data'].get('eval_size', 1.0)
+        },
+        "metrics": {
+            "average_loss": float(results['avg_loss']),
+            "wall_time_seconds": float(results['wall_time']),
+            "total_memory_mb": float(memory_used),
+            "total_flops_g": float(results['total_flops']/1e9),
+            "average_flops_per_sample_g": float(results['avg_flops']/1e9)
+        },
+        "runtime": {
+            "device": "CPU",
+            "timestamp": datetime.now().isoformat()
+        }
+    }
+    
+    # Save results to JSON file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = results_dir / f"evaluation_results_{timestamp}.json"
+    
+    with open(results_file, 'w') as f:
+        json.dump(results_dict, f, indent=2)
+    
+    logger.info(f"Results saved to {results_file}")
+    
+    # Log summary to console
+    logger.info(f"\nEvaluation Results Summary:")
+    logger.info(f"Model: {model_name}")
+    logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data)} of {int(len(test_data)/config['data'].get('eval_size', 1.0))} examples)")
+    logger.info(f"Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}")
+    logger.info(f"Pruning: {'Enabled (sparsity ' + str(config['model']['pruning']['target_sparsity']) + ')' if config['model']['pruning']['enabled'] else 'Disabled'}")
     logger.info(f"Average Loss: {results['avg_loss']:.4f}")
     logger.info(f"Wall Time: {results['wall_time']:.2f} seconds")
     logger.info(f"Total Memory Used: {memory_used:.2f} MB")
     logger.info(f"Total FLOPS: {results['total_flops']/1e9:.2f}G")
     logger.info(f"Average FLOPS per sample: {results['avg_flops']/1e9:.2f}G")
-    
-    # Save results to file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"evaluation_results_{timestamp}.txt"
-    
-    with open(results_file, 'w') as f:
-        f.write(f"Evaluation Results\n")
-        f.write(f"================\n")
-        f.write(f"Model: {model_name}\n")
-        f.write(f"Model Configuration:\n")
-        f.write(f"- Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}\n")
-        f.write(f"- Pruning: {'Enabled (sparsity ' + str(config['model']['pruning']['target_sparsity']) + ')' if config['model']['pruning']['enabled'] else 'Disabled'}\n")
-        f.write(f"\nMetrics:\n")
-        f.write(f"Average Loss: {results['avg_loss']:.4f}\n")
-        f.write(f"Wall Time: {results['wall_time']:.2f} seconds\n")
-        f.write(f"Total Memory Used: {memory_used:.2f} MB\n")
-        f.write(f"Total FLOPS: {results['total_flops']/1e9:.2f}G\n")
-        f.write(f"Average FLOPS per sample: {results['avg_flops']/1e9:.2f}G\n")
-        f.write(f"Device: CPU\n")
-        f.write(f"Number of test examples: {len(test_data)}\n")
 
 if __name__ == "__main__":
     main()

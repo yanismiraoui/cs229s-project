@@ -72,3 +72,7 @@ coverage.xml
 
 # Evaluation results
 evaluation_results_*.txt
+
+# Results directory
+results/
+*.json
