@@ -10,7 +10,7 @@ evaluation:
   batch_size: 256
   pretrained_path: path/to/pretrained/model.pth
 model:
-  base_model: microsoft/phi-1
+  base_model: deepseek-ai/deepseek-coder-6.7b-base
   max_length: 128
   pruning:
     enabled: false
@@ -19,7 +19,7 @@ model:
     enabled: false
   assisted_decoding:
     enabled: true
-    model: "deepseek-ai/deepseek-coder-1.3b-base"
+    model: deepseek-ai/deepseek-coder-1.3b-base
 training:
   batch_size: 32
   gradient_accumulation_steps: 4
