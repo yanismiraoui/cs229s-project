@@ -8,9 +8,11 @@ import time
 MODELS = [
     "facebook/opt-125m",
     "Salesforce/codegen-350M-mono",
-    # "bigcode/tiny_starcoder",
-    # "bigcode/starcoderbase-1b",  # slightly larger but still manageable
+    "bigcode/tiny_starcoder",
+    "bigcode/starcoderbase-1b",  # slightly larger but still manageable
     "microsoft/phi-1",
+    "deepseek-ai/deepseek-coder-6.7b-base",
+    "deepseek-ai/deepseek-coder-1.3b-base"
 ]
 
 # Configuration templates for different optimization settings
@@ -18,22 +20,32 @@ OPTIMIZATION_CONFIGS = [
     {
         "name": "baseline",
         "quantization": {"enabled": False},
-        "pruning": {"enabled": False}
+        "pruning": {"enabled": False, "target_sparsity": 0.3},
+        "assisted_decoding": {"enabled": False}
     },
     {
         "name": "quantized",
         "quantization": {"enabled": True, "bits": 8},
-        "pruning": {"enabled": False}
+        "pruning": {"enabled": False, "target_sparsity": 0.3},
+        "assisted_decoding": {"enabled": False}
     },
     {
         "name": "pruned",
         "quantization": {"enabled": False},
-        "pruning": {"enabled": True, "target_sparsity": 0.3}
+        "pruning": {"enabled": True, "target_sparsity": 0.3},
+        "assisted_decoding": {"enabled": False}
     },
     {
         "name": "quantized_pruned",
         "quantization": {"enabled": True, "bits": 8},
-        "pruning": {"enabled": True, "target_sparsity": 0.3}
+        "pruning": {"enabled": True, "target_sparsity": 0.3},
+        "assisted_decoding": {"enabled": False}
+    },
+    {
+        "name": "assisted_decoding",
+        "quantization": {"enabled": False},
+        "pruning": {"enabled": False, "target_sparsity": 0.3},
+        "assisted_decoding": {"enabled": True, "model": "deepseek-ai/deepseek-coder-1.3b-base"}
     }
 ]
 
@@ -51,6 +63,7 @@ def create_config_variant(base_config, model_name, opt_config):
     # Update optimization settings
     config['model']['quantization'] = opt_config['quantization']
     config['model']['pruning'] = opt_config['pruning']
+    config['model']['assisted_decoding'] = opt_config['assisted_decoding']
     
     # Set evaluation size to 20%
     config['data']['eval_size'] = 1
