@@ -37,7 +37,7 @@ class BoltModel:
     def apply_optimizations(self):
         """Apply various optimization techniques"""
         if self.config["model"]["quantization"]["enabled"]:
-            # Note: Implement quantization logic here
+             # Note: this is already done intrinsically in the model from HF for now
             pass
             
         if self.config["model"]["pruning"]["enabled"]:

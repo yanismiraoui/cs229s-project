@@ -215,6 +215,19 @@ def main():
         model.config.pad_token_id = tokenizer.pad_token_id
     
     model = model.to(device)
+
+    # Load assistant model if enabled
+    if config['model']['assisted_decoding']['enabled']:
+        logger.info(f"Using assisted decoding with model: {config['model']['assisted_decoding']['model']}")
+        logger.info(f"Loading assistant model...")
+        assistant_model = AutoModelForCausalLM.from_pretrained(
+            config['model']['assisted_decoding']['model'],
+            low_cpu_mem_usage=True,
+            trust_remote_code=True
+            )
+        assistant_model = assistant_model.to(device)
+    else:
+        assistant_model = None
     
     # Load test data
     test_data = load_test_data(config)

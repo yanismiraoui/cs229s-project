@@ -13,10 +13,13 @@ model:
   base_model: microsoft/phi-1
   max_length: 128
   pruning:
-    enabled: true
+    enabled: false
     target_sparsity: 0.3
   quantization:
     enabled: false
+  assisted_decoding:
+    enabled: true
+    model: "deepseek-ai/deepseek-coder-1.3b-base"
 training:
   batch_size: 32
   gradient_accumulation_steps: 4
