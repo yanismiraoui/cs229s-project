@@ -1,29 +1,25 @@
+data:
+  command_file: data/cmd.txt
+  eval_size: 0.02
+  max_source_length: 64
+  max_target_length: 64
+  natural_language_file: data/natural_language.txt
+  train_size: 0.8
+  val_size: 0.1
+evaluation:
+  batch_size: 256
+  pretrained_path: path/to/pretrained/model.pth
 model:
-  base_model: "facebook/opt-125m"  # 125M parameters
+  base_model: microsoft/phi-1
   max_length: 128
-  quantization:
-    enabled: false
-    bits: 8
   pruning:
     enabled: true
     target_sparsity: 0.3
-
+  quantization:
+    enabled: false
 training:
   batch_size: 32
+  gradient_accumulation_steps: 4
   learning_rate: 2e-5
   num_epochs: 10
   warmup_steps: 500
-  gradient_accumulation_steps: 4
-
-data:
-  natural_language_file: "data/natural_language.txt"
-  command_file: "data/cmd.txt"
-  max_source_length: 64
-  max_target_length: 64
-  train_size: 0.8
-  val_size: 0.1
-  eval_size: 0.05
-
-evaluation:
-  batch_size: 128  # Can increase this for smaller models
-  pretrained_path: "path/to/pretrained/model.pth"  # Update this with your pretrained model path

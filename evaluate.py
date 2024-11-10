@@ -79,23 +79,30 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 max_length=max_length,
                 truncation=True,
                 padding=True,
-                pad_to_multiple_of=8  # Optional: for better performance
+                pad_to_multiple_of=8
             )
             
             input_ids = batch_inputs['input_ids'].to(device)
             attention_mask = batch_inputs['attention_mask'].to(device)
             
-            # Count FLOPS for this batch
-            flops = FlopCountAnalysis(model, (input_ids, attention_mask))
-            batch_flops = flops.total()
-            total_flops += batch_flops
+            # Try to count FLOPS, but handle failures gracefully
+            try:
+                flops = FlopCountAnalysis(model, (input_ids, attention_mask))
+                batch_flops = flops.total()
+                total_flops += batch_flops
+                flops_message = f"FLOPS: {batch_flops/1e9:.2f}G"
+            except Exception as e:
+                logger.warning(f"Failed to count FLOPS: {str(e)}")
+                batch_flops = 0
+                flops_message = "FLOPS: N/A"
             
             # Get model outputs with hidden states
             outputs = model(
                 input_ids=input_ids, 
                 attention_mask=attention_mask,
                 labels=input_ids,
-                output_hidden_states=True  # Get hidden states
+                output_hidden_states=True,  # Get hidden states
+                use_cache=False  # Disable KV caching to avoid tracing issues
             )
             
             loss = outputs.loss
@@ -131,7 +138,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 f"({(current_batch/num_batches)*100:.1f}%): "
                 f"CPU: {cpu_percent}%, Mem: {memory_used:.2f}MB, "
                 f"Loss: {loss.item():.4f}, Sim Loss: {avg_similarity_loss.item():.4f}, "
-                f"FLOPS: {batch_flops/1e9:.2f}G\n"
+                f"{flops_message}\n"
                 f"Time: {batch_time:.2f}s/batch, "
                 f"ETA: {estimated_time_remaining/60:.1f}min remaining"
             )
@@ -140,13 +147,13 @@ def evaluate_model(model, tokenizer, test_data, device, config):
     wall_time = end_time - start_time
     avg_loss = total_loss * batch_size / len(test_data)
     avg_similarity_loss = total_similarity_loss * batch_size / len(test_data)
-    avg_flops = total_flops / len(test_data)
+    avg_flops = total_flops / len(test_data) if total_flops > 0 else None
     
     return {
         'avg_loss': avg_loss,
         'avg_similarity_loss': avg_similarity_loss,
         'wall_time': wall_time,
-        'total_flops': total_flops,
+        'total_flops': total_flops if total_flops > 0 else None,
         'avg_flops': avg_flops
     }
 
@@ -190,12 +197,22 @@ def main():
     logger.info(f"Loading model: {model_name}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    
+    # Handle missing padding token
+    if tokenizer.pad_token is None:
+        logger.info("No padding token found. Setting pad_token to eos_token...")
+        tokenizer.pad_token = tokenizer.eos_token
+        
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.float32,  # Use float32 for CPU
         low_cpu_mem_usage=True,
         trust_remote_code=True
     )
+    
+    # Ensure the model knows about the padding token
+    if model.config.pad_token_id is None:
+        model.config.pad_token_id = tokenizer.pad_token_id
     
     model = model.to(device)
     
@@ -216,7 +233,7 @@ def main():
     results_dir = pathlib.Path("results")
     results_dir.mkdir(exist_ok=True)
     
-    # Prepare results dictionary
+    # Prepare results dictionary with safe FLOPS handling
     results_dict = {
         "model": {
             "name": model_name,
@@ -240,15 +257,25 @@ def main():
             "average_loss": float(results['avg_loss']),
             "average_similarity_loss": float(results['avg_similarity_loss']),
             "wall_time_seconds": float(results['wall_time']),
-            "total_memory_mb": float(memory_used),
-            "total_flops_g": float(results['total_flops']/1e9),
-            "average_flops_per_sample_g": float(results['avg_flops']/1e9)
+            "total_memory_mb": float(memory_used)
         },
         "runtime": {
             "device": "CPU",
             "timestamp": datetime.now().isoformat()
         }
     }
+
+    # Add FLOPS metrics only if they were successfully calculated
+    if results['total_flops'] is not None:
+        results_dict["metrics"].update({
+            "total_flops_g": float(results['total_flops']/1e9),
+            "average_flops_per_sample_g": float(results['avg_flops']/1e9)
+        })
+    else:
+        results_dict["metrics"].update({
+            "total_flops_g": None,
+            "average_flops_per_sample_g": None
+        })
     
     # Save results to JSON file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -269,8 +296,11 @@ def main():
     logger.info(f"Average Similarity Loss: {results['avg_similarity_loss']:.4f}")
     logger.info(f"Wall Time: {results['wall_time']:.2f} seconds")
     logger.info(f"Total Memory Used: {memory_used:.2f} MB")
-    logger.info(f"Total FLOPS: {results['total_flops']/1e9:.2f}G")
-    logger.info(f"Average FLOPS per sample: {results['avg_flops']/1e9:.2f}G")
+    if results['total_flops'] is not None:
+        logger.info(f"Total FLOPS: {results['total_flops']/1e9:.2f}G")
+        logger.info(f"Average FLOPS per sample: {results['avg_flops']/1e9:.2f}G")
+    else:
+        logger.info("FLOPS calculation failed")
 
 if __name__ == "__main__":
     main()
