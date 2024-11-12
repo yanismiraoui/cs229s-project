@@ -6,6 +6,10 @@ from transformers import (
 )
 from typing import Dict, Optional, Union, List
 import torch
+import torch.nn.utils.prune as prune
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BoltModel:
     def __init__(self, config: Dict):
@@ -30,19 +34,48 @@ class BoltModel:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.model.config.pad_token_id = self.model.config.eos_token_id
-        
+
         # Apply optimizations
         self.apply_optimizations()
     
     def apply_optimizations(self):
         """Apply various optimization techniques"""
         if self.config["model"]["quantization"]["enabled"]:
-             # Note: this is already done intrinsically in the model from HF for now
-            pass
+            # Note: Quantization logic will be implemented later
+            logger.info("Quantization requested but not yet implemented")
             
         if self.config["model"]["pruning"]["enabled"]:
-            # Note: Implement pruning logic here
-            pass
+            target_sparsity = self.config["model"]["pruning"]["target_sparsity"]
+            logger.info(f"Applying pruning with target sparsity: {target_sparsity}")
+            
+            # Track the parameters we've pruned
+            pruned_params = []
+            
+            # Get all parameters that can be pruned
+            for name, module in self.model.named_modules():
+                # Prune linear and embedding layers
+                if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
+                    # Apply magnitude pruning to the weights
+                    prune.l1_unstructured(
+                        module,
+                        name='weight',
+                        amount=target_sparsity
+                    )
+                    
+                    # Make the pruning permanent
+                    prune.remove(module, 'weight')
+                    
+                    pruned_params.append(name)
+            
+            # Log pruning statistics
+            total_params = sum(p.numel() for p in self.model.parameters())
+            nonzero_params = sum(torch.count_nonzero(p) for p in self.model.parameters())
+            actual_sparsity = 1.0 - (nonzero_params / total_params)
+            
+            logger.info(f"Pruned {len(pruned_params)} modules")
+            logger.info(f"Achieved sparsity: {actual_sparsity:.4f}")
+            logger.info(f"Total parameters: {total_params:,}")
+            logger.info(f"Non-zero parameters: {nonzero_params:,}")
     
     def prepare_input(self, text: Union[str, List[str]]) -> dict:
         """Prepare input for the model"""

@@ -10,6 +10,7 @@ from fvcore.nn import FlopCountAnalysis
 import json
 import pathlib
 from torch.nn import functional as F
+from models.model import BoltModel
 from Levenshtein import distance as levenshtein_distance
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -259,27 +260,9 @@ def main():
     device = torch.device('cpu')
     logger.info(f"Using device: {device}")
     
-    # Load the model and tokenizer
-    model_name = config['model']['base_model']
-    logger.info(f"Loading model: {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, padding_side='left')
-    
-    # Handle missing padding token
-    if tokenizer.pad_token is None:
-        logger.info("No padding token found. Setting pad_token to eos_token...")
-        tokenizer.pad_token = tokenizer.eos_token
-        
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float32,  # Use float32 for CPU
-        low_cpu_mem_usage=True,
-        trust_remote_code=True
-    )
-    
-    # Ensure the model knows about the padding token
-    if model.config.pad_token_id is None:
-        model.config.pad_token_id = tokenizer.pad_token_id
+    # Use BoltModel instead of direct model loading
+    bolt_model = BoltModel(config)
+    model, tokenizer = bolt_model.get_model_and_tokenizer()
     
     model = model.to(device)
 
@@ -316,7 +299,7 @@ def main():
     # Prepare results dictionary with safe FLOPS handling
     results_dict = {
         "model": {
-            "name": model_name,
+            "name": config['model']['base_model'],
             "configuration": {
                 "quantization": {
                     "enabled": config['model']['quantization']['enabled'],
@@ -373,8 +356,8 @@ def main():
     
     # Log summary to console
     logger.info(f"\nEvaluation Results Summary:")
-    logger.info(f"Model: {model_name}")
-    logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data['natural_language'])} of {int(len(test_data['natural_language'] )/config['data'].get('eval_size', 1.0))} examples)")
+    logger.info(f"Model: {config['model']['base_model']}")
+    logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data)} of {int(len(test_data)/config['data'].get('eval_size', 1.0))} examples)")
     logger.info(f"Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}")
     logger.info(f"Pruning: {'Enabled (sparsity ' + str(config['model']['pruning']['target_sparsity']) + ')' if config['model']['pruning']['enabled'] else 'Disabled'}")
     logger.info(f"Average Loss: {results['avg_loss']:.4f}")
