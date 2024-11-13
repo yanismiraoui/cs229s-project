@@ -4,7 +4,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer
 )
-from typing import Dict, Optional, Union, List
+from typing import Dict, Union, List
 import torch
 import torch.nn.utils.prune as prune
 import logging
@@ -16,14 +16,15 @@ class BoltModel:
         self.config = config
         self.device = torch.device("cpu")
         
-        # Load model and tokenizer
+        # Load base model
         self.model = AutoModelForCausalLM.from_pretrained(
-            config["model"]["base_model"],
+            self.config["model"]["base_model"],
             torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
             device_map="cpu",
-            trust_remote_code=True 
+            trust_remote_code=True
         )
+            
         self.tokenizer = AutoTokenizer.from_pretrained(
             config["model"]["base_model"],
             padding_side="left",
@@ -34,16 +35,38 @@ class BoltModel:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.model.config.pad_token_id = self.model.config.eos_token_id
-
+        
         # Apply optimizations
         self.apply_optimizations()
     
     def apply_optimizations(self):
         """Apply various optimization techniques"""
+        # Apply quantization if enabled
         if self.config["model"]["quantization"]["enabled"]:
-            # Note: Quantization logic will be implemented later
-            logger.info("Quantization requested but not yet implemented")
+            logger.info("Applying dynamic quantization...")
             
+            # Get initial model size
+            initial_size = sum(p.nelement() * p.element_size() for p in self.model.parameters()) / (1024 * 1024)
+            logger.info(f"Model size before quantization: {initial_size:.2f} MB")
+            
+            try:
+                # Properly quantize the entire model
+                self.model = torch.quantization.quantize_dynamic(
+                    self.model,
+                    {torch.nn.Linear, torch.nn.Conv1d},  # Quantize both linear and conv layers
+                    dtype=torch.qint8
+                )
+                
+                # Get final model size
+                final_size = sum(p.nelement() * p.element_size() for p in self.model.parameters()) / (1024 * 1024)
+                logger.info(f"Model size after quantization: {final_size:.2f} MB")
+                logger.info(f"Size reduction: {(1 - final_size/initial_size)*100:.1f}%")
+                
+            except Exception as e:
+                logger.warning(f"Quantization failed: {str(e)}")
+                logger.warning("Continuing with unquantized model")
+        
+        # Apply pruning if enabled
         if self.config["model"]["pruning"]["enabled"]:
             target_sparsity = self.config["model"]["pruning"]["target_sparsity"]
             logger.info(f"Applying pruning with target sparsity: {target_sparsity}")
@@ -64,7 +87,6 @@ class BoltModel:
                     
                     # Make the pruning permanent
                     prune.remove(module, 'weight')
-                    
                     pruned_params.append(name)
             
             # Log pruning statistics

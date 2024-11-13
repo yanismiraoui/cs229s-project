@@ -13,12 +13,13 @@ model:
   base_model: facebook/opt-125m
   max_length: 128
   pruning:
-    enabled: false
+    enabled: true
     target_sparsity: 0.3
   quantization:
     enabled: false
+    bits: 8 # DO NOT CHANGE THIS, ONLY 8-BIT QUANTIZATION IS SUPPORTED
   assisted_decoding:
-    enabled: true
+    enabled: false
     model: deepseek-ai/deepseek-coder-1.3b-base
 training:
   batch_size: 256
