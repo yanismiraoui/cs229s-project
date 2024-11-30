@@ -4,21 +4,16 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import random
+import os
+from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_config():
-    """Load configuration from config.yaml"""
-    config_path = Path("configs/config.yaml")
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    return config
-
 def setup_together_ai():
-    """Setup TogetherAI with API key from config"""
-    config = load_config()
-    client = Together(api_key=config["together_ai"]["api_key"])
+    """Setup TogetherAI with API key from .env"""
+    load_dotenv()
+    client = Together(api_key=os.getenv("TOGETHER_API_KEY"))
     return client
 
 def load_evaluation_sets():
