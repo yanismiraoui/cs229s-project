@@ -2,16 +2,22 @@ import torch
 import time
 import psutil
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+from transformers import AutoModelForCausalLM, StoppingCriteriaList
 import yaml
 import logging
 from datetime import datetime
 from fvcore.nn import FlopCountAnalysis
 import json
 import pathlib
-from torch.nn import functional as F
 from models.model import BoltModel
-from Levenshtein import distance as levenshtein_distance
+from evaluators.openai_evaluator import setup_openai, validate_with_gpt4
+from utils.evaluation_utils import (
+    get_system_resources,
+    compute_similarity_loss,
+    compute_levenshtein_distance,
+    StopOnTokens,
+    load_test_data
+)
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
@@ -20,68 +26,13 @@ logger = logging.getLogger(__name__)
 # Suppress fvcore warnings
 logging.getLogger('fvcore.nn.jit_analysis').setLevel(logging.ERROR)
 
-def get_system_resources():
-    # Get CPU usage over a 2-second interval for more accurate reading
-    cpu_percent = psutil.cpu_percent(interval=2)
-    # Get memory usage for the current process
-    process = psutil.Process(os.getpid())
-    memory = process.memory_info().rss / 1024 / 1024  # in MB
-    return cpu_percent, memory
-
-def prepare_input(text, tokenizer, max_length):
-    # Prepare the input following DeepSeek's format
-    prompt = f"<|assistant|>{text}<|user|>"
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        max_length=max_length,
-        truncation=True,
-        padding='max_length',  # Changed to force all inputs to same length
-    )
-    return inputs
-
-def compute_similarity_loss(hidden_states1, hidden_states2, attention_mask=None):
-    """Compute cosine similarity between hidden states"""
-    # Get the last hidden states
-    last_hidden1 = hidden_states1[:, -1, :]
-    last_hidden2 = hidden_states2[:, -1, :]
-    
-    # Normalize the vectors
-    last_hidden1 = F.normalize(last_hidden1, p=2, dim=1)
-    last_hidden2 = F.normalize(last_hidden2, p=2, dim=1)
-    
-    # Compute cosine similarity
-    similarity = torch.sum(last_hidden1 * last_hidden2, dim=1)
-    
-    # Convert to loss (1 - similarity)
-    similarity_loss = 1 - similarity.mean()
-    
-    return similarity_loss
-
-def compute_levenshtein_distance(generated_text, target_text):
-    """Compute the Levenshtein distance between generated and target text"""
-    logger.info(f"Generated: {generated_text}")
-    logger.info(f"Target: {target_text}")
-    return levenshtein_distance(generated_text, target_text)
-
-class StopOnTokens(StoppingCriteria):
-    def __init__(self, stop_ids_list):
-        self.stop_ids_list = stop_ids_list
-
-    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor, **kwargs) -> bool:
-        for stop_ids in self.stop_ids_list:
-            if len(stop_ids) > len(input_ids[0]):
-                continue
-            if torch.equal(input_ids[0][-len(stop_ids):], torch.tensor(stop_ids, device=input_ids.device)):
-                return True
-        return False
-
 def evaluate_model(model, tokenizer, test_data, device, config):
     model.eval()
     total_loss = 0
     total_similarity_loss = 0
     total_flops = 0
     total_levenshtein = 0
+    total_exact_matches = 0
     start_time = time.time()
     # Get initial resource usage
     initial_cpu, initial_memory = get_system_resources()
@@ -92,6 +43,11 @@ def evaluate_model(model, tokenizer, test_data, device, config):
     num_batches = (len(test_data['natural_language']) + batch_size - 1) // batch_size
     logger.info(f"Starting evaluation with {num_batches} batches...")
     
+    # Initialize GPT validation metrics if enabled
+    gpt_validation_enabled = setup_openai()
+    total_gpt_score = 0
+    total_gpt_validations = 0
+    
     with torch.no_grad():
         for i in range(0, len(test_data['natural_language']), batch_size):
             batch_start_time = time.time()
@@ -101,7 +57,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             batch_commands = test_data['commands'][i:i + batch_size]
             
             # Process the entire batch at once
-            prompts = [f"You are a helpful bash command assistant. The user asked: {text}\n [BEGIN COMMAND]\n" for text in batch_texts]
+            prompts = [f"You are a helpful bash command assistant. The user asked: {text}\n[BEGIN COMMAND]\n" for text in batch_texts]
             batch_inputs = tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -140,7 +96,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 do_sample=False,
                 return_dict_in_generate=True,
                 output_hidden_states=True,  # Get hidden states during generation
-                # stopping_criteria=stopping_criteria
+                stopping_criteria=stopping_criteria
             )
             
             generated_sequences = generated_outputs.sequences
@@ -174,16 +130,28 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             
             # Decode generated outputs and compute Levenshtein distance
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
-            # remove the prompt from the generated text
-            # generated_texts = [text.replace(prompt, "") for text, prompt in zip(generated_texts, prompts)]
-            # remove the stop tokens from the generated text
-            # generated_texts = [text.replace("[END COMMAND]", "").replace("[END]", "") for text in generated_texts]
+            # Remove the prompt and stop tokens
+            generated_texts = [
+                text.split("[BEGIN COMMAND]")[-1]
+                    .replace("[END COMMAND]", "")
+                    .replace("[END]", "")
+                    .strip() 
+                for text in generated_texts
+            ]
             
             batch_levenshtein = 0
             for gen_text, target_text in zip(generated_texts, batch_commands):
                 gen_text = gen_text.replace("<|assistant|>", "").replace("<|user|>", "").strip()
                 batch_levenshtein += compute_levenshtein_distance(gen_text, target_text)
             total_levenshtein += batch_levenshtein
+            
+            # Count exact matches in batch
+            batch_exact_matches = 0
+            for gen_text, target_text in zip(generated_texts, batch_commands):
+                gen_text = gen_text.replace("<|assistant|>", "").replace("<|user|>", "").strip()
+                if gen_text == target_text.strip():
+                    batch_exact_matches += 1
+            total_exact_matches += batch_exact_matches
             
             batch_time = time.time() - batch_start_time
             elapsed_time = time.time() - start_time
@@ -199,11 +167,37 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 f"({(current_batch/num_batches)*100:.1f}%): "
                 f"CPU: {current_cpu}%, Mem Change: {memory_used:.2f}MB, "
                 f"Loss: {loss.item():.4f}, Sim Loss: {avg_similarity_loss.item():.4f}, "
+                f"Exact Matches: {batch_exact_matches}/{len(batch_commands)}, "
                 f"Avg Levenshtein: {batch_levenshtein/len(batch_commands):.2f}, "
                 f"{flops_message}\n"
                 f"Time: {batch_time:.2f}s/batch, "
                 f"ETA: {estimated_time_remaining/60:.1f}min remaining"
             )
+            
+            # Add GPT-4 validation for a subset of examples (to manage API costs)
+            if gpt_validation_enabled and current_batch % 5 == 0:  # Validate every 5th batch
+                for gen_text, target_text, nl_text in zip(
+                    generated_texts[:2],  # Only validate first 2 examples in batch
+                    batch_commands[:2],
+                    batch_texts[:2]
+                ):
+                    try:
+                        validation_result = validate_with_gpt4(gen_text, target_text, nl_text)
+                        total_gpt_score += validation_result['correctness_score']
+                        total_gpt_validations += 1
+                        
+                        logger.info("\nGPT-4 Validation:")
+                        logger.info(f"Generated: {gen_text}")
+                        logger.info(f"Target: {target_text}")
+                        logger.info(f"Score: {validation_result['correctness_score']}")
+                        logger.info(f"Explanation: {validation_result['explanation']}")
+                        if validation_result['key_differences']:
+                            logger.info(f"Key differences: {', '.join(validation_result['key_differences'])}")
+                    except Exception as e:
+                        logger.warning(f"GPT-4 validation failed: {str(e)}")
+    
+    # Calculate final metrics including exact match accuracy
+    exact_match_accuracy = total_exact_matches / len(test_data['natural_language'])
     
     # Calculate final metrics
     end_time = time.time()
@@ -213,43 +207,21 @@ def evaluate_model(model, tokenizer, test_data, device, config):
     avg_flops = total_flops / len(test_data) if total_flops > 0 else None
     avg_levenshtein = total_levenshtein / len(test_data)
     
+    # Add GPT validation results to return dict
+    avg_gpt_score = total_gpt_score / total_gpt_validations if total_gpt_validations > 0 else None
+    
     return {
         'avg_loss': avg_loss,
         'avg_similarity_loss': avg_similarity_loss,
         'avg_levenshtein': avg_levenshtein,
+        'exact_match_accuracy': exact_match_accuracy,
+        'total_exact_matches': total_exact_matches,
         'wall_time': wall_time,
         'total_flops': total_flops if total_flops > 0 else None,
-        'avg_flops': avg_flops
+        'avg_flops': avg_flops,
+        'gpt_validation_score': avg_gpt_score,
+        'gpt_validations_performed': total_gpt_validations
     }
-
-def load_test_data(config):
-    # Load your test data from files
-    test_data = []
-    
-    # Load natural language examples
-    with open(config['data']['natural_language_file'], 'r') as f:
-        natural_language = f.readlines()
-    
-    # Load command examples
-    with open(config['data']['command_file'], 'r') as f:
-        commands = f.readlines()
-    
-    # Combine the data into a single dict
-    test_data = {
-        'natural_language': natural_language,
-        'commands': commands
-    }
-    
-    # Calculate how many examples to use based on eval_size
-    eval_size = config['data'].get('eval_size', 1.0)  # Default to using all data if not specified
-    num_examples = int(len(test_data['natural_language']) * eval_size)
-    
-    # Take the first num_examples
-    test_data = {key: test_data[key][:num_examples] for key in test_data}
-    
-    logger.info(f"Using {eval_size*100}% of data ({num_examples} examples) for evaluation")
-    
-    return test_data
 
 def main():
     # Load configuration
@@ -269,7 +241,7 @@ def main():
     # Load assistant model if enabled
     if config['model']['assisted_decoding']['enabled']:
         logger.info(f"Using assisted decoding with model: {config['model']['assisted_decoding']['model']}")
-        logger.info(f"Loading assistant model...")
+        logger.info("Loading assistant model...")
         assistant_model = AutoModelForCausalLM.from_pretrained(
             config['model']['assisted_decoding']['model'],
             low_cpu_mem_usage=True,
@@ -345,6 +317,19 @@ def main():
         "average_levenshtein_distance": float(results['avg_levenshtein'])
     })
     
+    # Add exact match metrics to results
+    results_dict["metrics"].update({
+        "exact_match_accuracy": float(results['exact_match_accuracy']),
+        "total_exact_matches": int(results['total_exact_matches'])
+    })
+    
+    # Add GPT validation metrics to results if available
+    if results.get('gpt_validation_score') is not None:
+        results_dict["metrics"].update({
+            "gpt_validation_score": float(results['gpt_validation_score']),
+            "gpt_validations_performed": int(results['gpt_validations_performed'])
+        })
+    
     # Save results to JSON file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_file = results_dir / f"evaluation_results_{timestamp}.json"
@@ -355,7 +340,7 @@ def main():
     logger.info(f"Results saved to {results_file}")
     
     # Log summary to console
-    logger.info(f"\nEvaluation Results Summary:")
+    logger.info("\nEvaluation Results Summary:")
     logger.info(f"Model: {config['model']['base_model']}")
     logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data)} of {int(len(test_data)/config['data'].get('eval_size', 1.0))} examples)")
     logger.info(f"Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}")
@@ -370,6 +355,10 @@ def main():
     else:
         logger.info("FLOPS calculation failed")
     logger.info(f"Average Levenshtein Distance: {results['avg_levenshtein']:.2f}")
+    logger.info(f"Exact Matches: {results['total_exact_matches']}/{len(test_data['natural_language'])} ({results['exact_match_accuracy']*100:.2f}%)")
+    if results.get('gpt_validation_score') is not None:
+        logger.info(f"GPT-4 Validation Score: {results['gpt_validation_score']}")
+        logger.info(f"GPT-4 Validations Performed: {results['gpt_validations_performed']}")
 
 if __name__ == "__main__":
     main()
