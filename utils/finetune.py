@@ -9,6 +9,17 @@ import torch
 from datasets import load_dataset
 import os
 from typing import Optional, Dict, Any
+from datasets import Dataset
+
+# At the top of the file, after the imports
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+def get_device():
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 class ModelFinetuner:
     def __init__(
@@ -29,9 +40,12 @@ class ModelFinetuner:
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
         
+        # Get the appropriate device
+        self.device = get_device()
+        
         # Initialize model and tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
         
         # Add padding token if it doesn't exist
         if self.tokenizer.pad_token is None:
@@ -40,8 +54,24 @@ class ModelFinetuner:
 
     def load_and_prepare_data(self):
         """Load and prepare the dataset for training"""
-        # Load dataset from the data directory
-        dataset = load_dataset('text', data_files=self.data_path)
+        # Read both input and output files
+        with open(self.data_path + "/input.txt", "r") as f_in, \
+             open(self.data_path + "/output.txt", "r") as f_out:
+            inputs = f_in.readlines()
+            outputs = f_out.readlines()
+        
+        # Create a dataset dictionary
+        dataset_dict = {
+            "train": {
+                "text": [
+                    f"Prompt: {input.strip()}\nResponse: {output.strip()}"
+                    for input, output in zip(inputs, outputs)
+                ]
+            }
+        }
+        
+        # Convert to HuggingFace dataset
+        dataset = Dataset.from_dict(dataset_dict["train"])
         
         def tokenize_function(examples):
             return self.tokenizer(
@@ -73,7 +103,6 @@ class ModelFinetuner:
             logging_steps=100,
             save_strategy="epoch",
             save_total_limit=2,
-            no_cuda=not torch.cuda.is_available(),
             push_to_hub=False,
         )
 
@@ -95,7 +124,7 @@ class ModelFinetuner:
         trainer = Trainer(
             model=self.model,
             args=training_args,
-            train_dataset=dataset["train"],
+            train_dataset=dataset,
             data_collator=data_collator,
         )
         
@@ -110,7 +139,7 @@ def main():
     # Example usage
     finetuner = ModelFinetuner(
         model_name="facebook/opt-125m",
-        data_path="data/*.txt",
+        data_path="data",
         output_dir="output/finetuned-model",
         max_length=512,
         batch_size=4,
