@@ -76,3 +76,6 @@ evaluation_results_*.txt
 # Results directory
 results/
 *.json
+
+# Configs
+configs/config.yaml
