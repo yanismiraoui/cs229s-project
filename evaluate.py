@@ -100,7 +100,7 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
                 flops_message = "FLOPS: N/A"
 
             # Enhanced stopping criteria
-            stopping_list = ["[END COMMAND]", "[END]", "\n[END", "\n[END COMMAND"]
+            stopping_list = ["END COMMAND", "END", "END", "\nEND COMMAND"]
             stop_ids_list = []
             for word in stopping_list:
                 # Handle both single token and multi-token cases
@@ -319,9 +319,28 @@ def main():
     memory_info = memory_tracker.memory_info()
     start_memory = memory_info.rss / 1024 / 1024  # MB
     
-    # Use BoltModel instead of direct model loading
+    # Modified model loading logic
     bolt_model = BoltModel(config)
-    model, tokenizer = bolt_model.get_model_and_tokenizer()
+    
+    if config['model']['use_finetuned']:
+        logger.info(f"Loading finetuned model from {config['model']['finetuned_path']}")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                config['model']['finetuned_path'],
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+                local_files_only=True  # Ensure we only look for local files
+            )
+            # Keep the tokenizer from the finetuned model path for consistency
+            tokenizer = bolt_model.tokenizer
+            logger.info("Successfully loaded finetuned model")
+        except Exception as e:
+            logger.error(f"Failed to load finetuned model: {str(e)}")
+            logger.info("Falling back to base model...")
+            model, tokenizer = bolt_model.get_model_and_tokenizer()
+    else:
+        logger.info(f"Using base model: {config['model']['base_model']}")
+        model, tokenizer = bolt_model.get_model_and_tokenizer()
     
     model = model.to(device)
 

@@ -55,10 +55,14 @@ class ModelFinetuner:
     def load_and_prepare_data(self):
         """Load and prepare the dataset for training"""
         # Read both input and output files
-        with open(self.data_path + "/input.txt", "r") as f_in, \
-             open(self.data_path + "/output.txt", "r") as f_out:
+        with open(self.data_path + "/cleaned_natural_language.txt", "r") as f_in, \
+             open(self.data_path + "/cleaned_cmd.txt", "r") as f_out:
             inputs = f_in.readlines()
             outputs = f_out.readlines()
+        
+        # Take only 50% of the data
+        # inputs = inputs[:len(inputs)//5]
+        # outputs = outputs[:len(outputs)//5]
         
         # Create a dataset dictionary
         dataset_dict = {
@@ -138,9 +142,9 @@ class ModelFinetuner:
 def main():
     # Example usage
     finetuner = ModelFinetuner(
-        model_name="facebook/opt-125m",
+        model_name="deepseek-ai/deepseek-coder-1.3b-base",
         data_path="data",
-        output_dir="output/finetuned-model",
+        output_dir="output/deepseek-ai_deepseek-coder-1_3b-base",
         max_length=512,
         batch_size=4,
         num_epochs=3,
