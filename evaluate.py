@@ -10,7 +10,7 @@ from fvcore.nn import FlopCountAnalysis
 import json
 import pathlib
 from models.model import BoltModel
-from evaluators.openai_evaluator import setup_openai, validate_with_gpt4
+from evaluators.openai_evaluator import setup_openai, batch_validate_with_gpt4
 from utils.evaluation_utils import (
     get_system_resources,
     compute_similarity_loss,
@@ -18,6 +18,7 @@ from utils.evaluation_utils import (
     StopOnTokens,
     load_test_data
 )
+from utils.command_validator import batch_validate_commands
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
@@ -48,6 +49,11 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
     gpt_validation_enabled = setup_openai()
     total_gpt_score = 0
     total_gpt_validations = 0
+    
+    # Initialize syntax validation metrics
+    total_syntax_valid = 0
+    total_syntax_checks = 0
+    syntax_errors = []
     
     with torch.no_grad():
         for i in range(0, len(test_data['natural_language']), batch_size):
@@ -198,27 +204,53 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
                 f"ETA: {estimated_time_remaining/60:.1f}min remaining"
             )
             
-            # Add GPT-4 validation for a subset of examples (to manage API costs)
-            if gpt_validation_enabled and current_batch % 5 == 0:  # Validate every 5th batch
-                for gen_text, target_text, nl_text in zip(
-                    generated_texts[:2],  # Only validate first 2 examples in batch
-                    batch_commands[:2],
-                    batch_texts[:2]
-                ):
-                    try:
-                        validation_result = validate_with_gpt4(gen_text, target_text, nl_text)
-                        total_gpt_score += validation_result['correctness_score']
+            # Validate all commands with GPT-4
+            if gpt_validation_enabled:
+                try:
+                    # Use min of batch_size and 64 for GPT validation
+                    gpt_batch_size = min(len(generated_texts), 64)
+                    validation_results = batch_validate_with_gpt4(
+                        generated_texts,
+                        batch_commands,
+                        batch_texts,
+                        batch_size=gpt_batch_size
+                    )
+                    
+                    for gen_text, target_text, result in zip(generated_texts, batch_commands, validation_results):
+                        total_gpt_score += result.get('correctness_score', 0)
                         total_gpt_validations += 1
                         
                         logger.info("\nGPT-4 Validation:")
                         logger.info(f"Generated: {gen_text}")
                         logger.info(f"Target: {target_text}")
-                        logger.info(f"Score: {validation_result['correctness_score']}")
-                        logger.info(f"Explanation: {validation_result['explanation']}")
-                        if validation_result['key_differences']:
-                            logger.info(f"Key differences: {', '.join(validation_result['key_differences'])}")
-                    except Exception as e:
-                        logger.warning(f"GPT-4 validation failed: {str(e)}")
+                        logger.info(f"Score: {result.get('correctness_score', 0):.2f}")
+                        logger.info(f"Equivalent: {result.get('functionally_equivalent', False)}")
+                except Exception as e:
+                    logger.warning(f"GPT-4 batch validation failed: {str(e)}")
+            
+            # Validate generated commands
+            validation_results = batch_validate_commands(generated_texts)
+            batch_syntax_valid = sum(1 for r in validation_results if r['is_valid'])
+            total_syntax_valid += batch_syntax_valid
+            total_syntax_checks += len(validation_results)
+            
+            # Collect syntax errors for logging
+            batch_errors = [
+                {
+                    'command': r['command'],
+                    'error': r['error']
+                }
+                for r in validation_results if not r['is_valid']
+            ]
+            syntax_errors.extend(batch_errors)
+            
+            # Log syntax validation results
+            logger.info(f"Syntax validation - Valid: {batch_syntax_valid}/{len(batch_commands)} "
+                       f"({batch_syntax_valid/len(batch_commands)*100:.1f}%)")
+            for result in validation_results:
+                if not result['is_valid']:
+                    logger.debug(f"Invalid command: {result['command']}")
+                    logger.debug(f"Error: {result['error']}")
     
     # Calculate final metrics including exact match accuracy
     exact_match_accuracy = total_exact_matches / len(test_data['natural_language'])
@@ -243,6 +275,9 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
         memory_info.vms   # Virtual Memory Size
     ) / 1024 / 1024  # Convert to MB
     
+    # Add syntax validation to return dict
+    syntax_validity_rate = total_syntax_valid / total_syntax_checks if total_syntax_checks > 0 else 0
+    
     return {
         'avg_loss': avg_loss,
         'avg_similarity_loss': avg_similarity_loss,
@@ -261,6 +296,12 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
             'peak_memory_mb': peak_memory,
             'virtual_memory_mb': memory_info.vms / 1024 / 1024,
             'resident_memory_mb': memory_info.rss / 1024 / 1024
+        },
+        'syntax_validation': {
+            'total_valid': total_syntax_valid,
+            'total_checked': total_syntax_checks,
+            'validity_rate': syntax_validity_rate,
+            'errors': syntax_errors[:10]  # Store first 10 errors as examples
         }
     }
 
@@ -376,6 +417,17 @@ def main():
             "gpt_validations_performed": int(results['gpt_validations_performed'])
         })
     
+    # Add syntax validation metrics to results
+    if 'syntax_validation' in results:
+        results_dict["metrics"].update({
+            "syntax_validation": {
+                "validity_rate": float(results['syntax_validation']['validity_rate']),
+                "total_valid": int(results['syntax_validation']['total_valid']),
+                "total_checked": int(results['syntax_validation']['total_checked']),
+                "error_examples": results['syntax_validation']['errors']  # Include sample errors
+            }
+        })
+    
     # Save results to JSON file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_file = results_dir / f"evaluation_results_{timestamp}.json"
@@ -410,6 +462,16 @@ def main():
     if results.get('gpt_validation_score') is not None:
         logger.info(f"GPT-4 Validation Score: {results['gpt_validation_score']}")
         logger.info(f"GPT-4 Validations Performed: {results['gpt_validations_performed']}")
+    if 'syntax_validation' in results:
+        logger.info("\nSyntax Validation Results:")
+        logger.info(f"Valid Commands: {results['syntax_validation']['total_valid']}/{results['syntax_validation']['total_checked']} "
+                   f"({results['syntax_validation']['validity_rate']*100:.1f}%)")
+        if results['syntax_validation']['errors']:
+            logger.info("\nSample Syntax Errors:")
+            for error in results['syntax_validation']['errors']:
+                logger.info(f"Command: {error['command']}")
+                logger.info(f"Error: {error['error']}")
+                logger.info("---")
 
 if __name__ == "__main__":
     main()
