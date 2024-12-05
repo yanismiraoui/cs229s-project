@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 # Suppress fvcore warnings
 logging.getLogger('fvcore.nn.jit_analysis').setLevel(logging.ERROR)
 
-def evaluate_model(model, tokenizer, test_data, device, config):
+def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, start_memory):
+    
     model.eval()
     total_loss = 0
     total_similarity_loss = 0
@@ -72,10 +73,21 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             
             # Try to count FLOPS
             try:
-                flops = FlopCountAnalysis(model, (input_ids, attention_mask))
-                batch_flops = flops.total()
+                # Count FLOPS for forward pass only
+                forward_flops = FlopCountAnalysis(model, (input_ids, attention_mask))
+                forward_flops_count = forward_flops.total()
+                
+                max_new_tokens = config['model'].get('max_new_tokens', 50)
+                generation_flops = sum([forward_flops_count * (i/input_ids.shape[1]) 
+                                     for i in range(max_new_tokens)])
+                
+                batch_flops = forward_flops_count + generation_flops
                 total_flops += batch_flops
-                flops_message = f"FLOPS: {batch_flops/1e9:.2f}G"
+                flops_message = (
+                    f"FLOPS: {batch_flops/1e9:.2f}G "
+                    f"(Forward: {forward_flops_count/1e9:.2f}G, "
+                    f"Generation: {generation_flops/1e9:.2f}G)"
+                )
             except Exception as e:
                 logger.warning(f"Failed to count FLOPS: {str(e)}")
                 batch_flops = 0
@@ -214,13 +226,22 @@ def evaluate_model(model, tokenizer, test_data, device, config):
     # Calculate final metrics
     end_time = time.time()
     wall_time = end_time - start_time
-    avg_loss = total_loss * batch_size / len(test_data)
-    avg_similarity_loss = total_similarity_loss * batch_size / len(test_data)
-    avg_flops = total_flops / len(test_data) if total_flops > 0 else None
-    avg_levenshtein = total_levenshtein / len(test_data)
+    avg_loss = total_loss * batch_size / len(test_data['natural_language'])
+    avg_similarity_loss = total_similarity_loss * batch_size / len(test_data['natural_language'])
+    avg_flops = total_flops / len(test_data['natural_language']) if total_flops > 0 else None
+    avg_levenshtein = total_levenshtein / len(test_data['natural_language'])
     
     # Add GPT validation results to return dict
     avg_gpt_score = total_gpt_score / total_gpt_validations if total_gpt_validations > 0 else None
+    
+    # Track memory at end of evaluation
+    end_memory = memory_tracker.memory_info().rss / 1024 / 1024  # MB
+    # Replace peak_memory calculation with more accurate tracking
+    memory_info = memory_tracker.memory_info()
+    peak_memory = max(
+        memory_info.rss,  # Resident Set Size
+        memory_info.vms   # Virtual Memory Size
+    ) / 1024 / 1024  # Convert to MB
     
     return {
         'avg_loss': avg_loss,
@@ -232,7 +253,15 @@ def evaluate_model(model, tokenizer, test_data, device, config):
         'total_flops': total_flops if total_flops > 0 else None,
         'avg_flops': avg_flops,
         'gpt_validation_score': avg_gpt_score,
-        'gpt_validations_performed': total_gpt_validations
+        'gpt_validations_performed': total_gpt_validations,
+        'memory': {
+            'start_memory_mb': start_memory,
+            'end_memory_mb': end_memory,
+            'used_memory_mb': end_memory - start_memory,
+            'peak_memory_mb': peak_memory,
+            'virtual_memory_mb': memory_info.vms / 1024 / 1024,
+            'resident_memory_mb': memory_info.rss / 1024 / 1024
+        }
     }
 
 def main():
@@ -243,6 +272,11 @@ def main():
     # Force CPU usage
     device = torch.device('cpu')
     logger.info(f"Using device: {device}")
+
+    # Enhanced memory tracking
+    memory_tracker = psutil.Process(os.getpid())
+    memory_info = memory_tracker.memory_info()
+    start_memory = memory_info.rss / 1024 / 1024  # MB
     
     # Use BoltModel instead of direct model loading
     bolt_model = BoltModel(config)
@@ -269,12 +303,7 @@ def main():
     
     # Start evaluation
     logger.info("Starting evaluation...")
-    start_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-    
-    results = evaluate_model(model, tokenizer, test_data, device, config)
-    
-    end_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-    memory_used = end_memory - start_memory
+    results = evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, start_memory)
     
     # Create results directory if it doesn't exist
     results_dir = pathlib.Path("results")
@@ -304,7 +333,12 @@ def main():
             "average_loss": float(results['avg_loss']),
             "average_similarity_loss": float(results['avg_similarity_loss']),
             "wall_time_seconds": float(results['wall_time']),
-            "total_memory_mb": float(memory_used)
+            "memory_usage_mb": {
+                "start": float(results['memory']['start_memory_mb']),
+                "end": float(results['memory']['end_memory_mb']),
+                "used": float(results['memory']['used_memory_mb']),
+                "peak": float(results['memory']['peak_memory_mb']) if results['memory']['peak_memory_mb'] is not None else None
+            }
         },
         "runtime": {
             "device": "CPU",
@@ -354,13 +388,18 @@ def main():
     # Log summary to console
     logger.info("\nEvaluation Results Summary:")
     logger.info(f"Model: {config['model']['base_model']}")
-    logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data)} of {int(len(test_data)/config['data'].get('eval_size', 1.0))} examples)")
+    logger.info(f"Data: Using {config['data'].get('eval_size', 1.0)*100:.1f}% of available data ({len(test_data['natural_language'])} of {int(len(test_data['natural_language'])/config['data'].get('eval_size', 1.0))} examples)")
     logger.info(f"Quantization: {'Enabled (' + str(config['model']['quantization']['bits']) + ' bits)' if config['model']['quantization']['enabled'] else 'Disabled'}")
     logger.info(f"Pruning: {'Enabled (sparsity ' + str(config['model']['pruning']['target_sparsity']) + ')' if config['model']['pruning']['enabled'] else 'Disabled'}")
     logger.info(f"Average Loss: {results['avg_loss']:.4f}")
     logger.info(f"Average Similarity Loss: {results['avg_similarity_loss']:.4f}")
     logger.info(f"Wall Time: {results['wall_time']:.2f} seconds")
-    logger.info(f"Total Memory Used: {memory_used:.2f} MB")
+    logger.info(f"Memory Usage:")
+    logger.info(f"  Start: {results['memory']['start_memory_mb']:.2f} MB")
+    logger.info(f"  End: {results['memory']['end_memory_mb']:.2f} MB")
+    logger.info(f"  Used: {results['memory']['used_memory_mb']:.2f} MB")
+    if results['memory']['peak_memory_mb'] is not None:
+        logger.info(f"  Peak: {results['memory']['peak_memory_mb']:.2f} MB")
     if results['total_flops'] is not None:
         logger.info(f"Total FLOPS: {results['total_flops']/1e9:.2f}G")
         logger.info(f"Average FLOPS per sample: {results['avg_flops']/1e9:.2f}G")
