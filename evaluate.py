@@ -57,7 +57,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             batch_commands = test_data['commands'][i:i + batch_size]
             
             # Process the entire batch at once
-            prompts = [f"You are a helpful bash command assistant. The user asked: {text}\n[BEGIN COMMAND]\n" for text in batch_texts]
+            prompts = [f"You are a helpful bash command assistant. The user asked: {text}\nProvide only the command and end with [END COMMAND].\n[BEGIN COMMAND] " for text in batch_texts]
             batch_inputs = tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -81,9 +81,19 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 batch_flops = 0
                 flops_message = "FLOPS: N/A"
 
-            # Set stopping criteria
-            stopping_list = ["[END COMMAND]", "[END]"]
-            stop_ids_list = [tokenizer.encode(word, add_special_tokens=False) for word in stopping_list]
+            # Enhanced stopping criteria
+            stopping_list = ["[END COMMAND]", "[END]", "\n[END", "\n[END COMMAND"]
+            stop_ids_list = []
+            for word in stopping_list:
+                # Handle both single token and multi-token cases
+                tokens = tokenizer.encode(word, add_special_tokens=False)
+                if len(tokens) > 0:
+                    stop_ids_list.append(tokens)
+                # Also add the token with a space prefix
+                space_tokens = tokenizer.encode(" " + word, add_special_tokens=False)
+                if len(space_tokens) > 0:
+                    stop_ids_list.append(space_tokens)
+            
             stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_ids_list)])
             
             # Generate outputs first
@@ -100,7 +110,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             )
             
             generated_sequences = generated_outputs.sequences
-            attention_mask_generated = torch.ones_like(generated_sequences)
+            attention_mask_generated = (generated_sequences != tokenizer.pad_token_id).long()
 
             # Get loss and hidden states from the generated sequence
             outputs = model(
@@ -119,7 +129,7 @@ def evaluate_model(model, tokenizer, test_data, device, config):
                 sim_loss = compute_similarity_loss(
                     hidden_states[j],
                     hidden_states[j+1],
-                    attention_mask
+                    attention_mask_generated
                 )
                 similarity_losses.append(sim_loss)
             
@@ -131,11 +141,13 @@ def evaluate_model(model, tokenizer, test_data, device, config):
             # Decode generated outputs and compute Levenshtein distance
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             # Remove the prompt and stop tokens
+            print(generated_texts)
             generated_texts = [
                 text.split("[BEGIN COMMAND]")[-1]
-                    .replace("[END COMMAND]", "")
-                    .replace("[END]", "")
-                    .strip() 
+                    .split("[END COMMAND]")[0]  # Try full end token first
+                    .split("[END]")[0]  # Try shorter end token
+                    .split("[END ")[0]  # Handle partial end token
+                    .strip()
                 for text in generated_texts
             ]
             
