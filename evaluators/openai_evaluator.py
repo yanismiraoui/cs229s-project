@@ -62,7 +62,7 @@ def batch_validate_with_gpt4(
         batch_prompt = "Analyze these bash commands and determine if they are functionally equivalent. Respond with ONLY a JSON array - no markdown formatting, no explanations:\n\n"
         for j, (gen, target, nl) in enumerate(zip(batch_gen, batch_target, batch_nl)):
             batch_prompt += f"Example {j+1}:\n"
-            batch_prompt += f"Natural Language: {nl}\n"
+            # batch_prompt += f"Natural Language: {nl}\n"
             batch_prompt += f"Generated: {gen}\n"
             batch_prompt += f"Target: {target}\n\n"
         

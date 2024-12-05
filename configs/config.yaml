@@ -10,8 +10,8 @@ evaluation:
   batch_size: 256
   pretrained_path: path/to/pretrained/model.pth
 model:
-  base_model: microsoft/phi-1
-  use_finetuned: true
+  base_model: deepseek-ai/deepseek-coder-7b-base-v1.5
+  use_finetuned: false
   finetuned_path: output/microsoft_phi-1
   max_length: 128
   pruning:

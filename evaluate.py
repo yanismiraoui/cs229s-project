@@ -100,7 +100,7 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
                 flops_message = "FLOPS: N/A"
 
             # Enhanced stopping criteria
-            stopping_list = ["END COMMAND", "END", "END", "\nEND COMMAND"]
+            stopping_list = ["END COMMAND", "END"]
             stop_ids_list = []
             for word in stopping_list:
                 # Handle both single token and multi-token cases
@@ -108,9 +108,9 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
                 if len(tokens) > 0:
                     stop_ids_list.append(tokens)
                 # Also add the token with a space prefix
-                space_tokens = tokenizer.encode(" " + word, add_special_tokens=False)
-                if len(space_tokens) > 0:
-                    stop_ids_list.append(space_tokens)
+                # space_tokens = tokenizer.encode(" " + word, add_special_tokens=False)
+                # if len(space_tokens) > 0:
+                #     stop_ids_list.append(space_tokens)
             
             stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_ids_list)])
             
@@ -118,13 +118,13 @@ def evaluate_model(model, tokenizer, test_data, device, config, memory_tracker, 
             generated_outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=50,
+                max_new_tokens=30,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,
                 return_dict_in_generate=True,
                 output_hidden_states=True,  # Get hidden states during generation
-                stopping_criteria=stopping_criteria
+                # stopping_criteria=stopping_criteria
             )
             
             generated_sequences = generated_outputs.sequences

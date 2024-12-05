@@ -82,3 +82,6 @@ configs/config.yaml
 
 # output files
 output/
+
+# API keys
+OPENAI_API_KEY
