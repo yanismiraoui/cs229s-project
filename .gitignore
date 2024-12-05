@@ -79,3 +79,6 @@ results/
 
 # Configs
 configs/config.yaml
+
+# output files
+output/
