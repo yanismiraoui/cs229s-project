@@ -44,6 +44,8 @@ To evaluate the model, run the following command after setting the parameters in
 python evaluate.py
 ```
 
+Note: To use the LLM-as-a-judge, you need to have an OpenAI API key and save it in a `OPENAI_API_KEY` file in the root directory.
+
 ### Web Leaderboard 🏆
 
 To launch the web interface:
