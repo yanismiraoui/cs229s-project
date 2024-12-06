@@ -142,9 +142,9 @@ class ModelFinetuner:
 def main():
     # Example usage
     finetuner = ModelFinetuner(
-        model_name="deepseek-ai/deepseek-coder-1.3b-base",
+        model_name="Qwen/Qwen2.5-Coder-0.5B",
         data_path="data",
-        output_dir="output/deepseek-ai_deepseek-coder-1_3b-base",
+        output_dir="output/Qwen_Qwen2.5-Coder-0.5B",
         max_length=512,
         batch_size=4,
         num_epochs=3,

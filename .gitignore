@@ -75,6 +75,7 @@ evaluation_results_*.txt
 
 # Results directory
 results/
+results_final/
 *.json
 
 # Configs

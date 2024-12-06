@@ -10,7 +10,7 @@ evaluation:
   batch_size: 256
   pretrained_path: path/to/pretrained/model.pth
 model:
-  base_model: deepseek-ai/deepseek-coder-7b-base-v1.5
+  base_model: deepseek-ai/deepseek-coder-1.3b-base
   use_finetuned: false
   finetuned_path: output/microsoft_phi-1
   max_length: 128
@@ -21,8 +21,8 @@ model:
     enabled: false
     bits: 8
   assisted_decoding:
-    enabled: false
-    model: deepseek-ai/deepseek-coder-1.3b-base
+    enabled: true
+    model: Qwen/Qwen2.5-Coder-0.5B
 training:
   batch_size: 256
   gradient_accumulation_steps: 4
