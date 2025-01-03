@@ -1,5 +1,7 @@
 # BOLT ⚡️: Bash Optimization through Lightweight Transformers
 
+[BOLT Leaderboard](https://bolt-dashboard.replit.app/)  
+
 Efficient large language models that convert natural language descriptions into shell/bash commands, using optimization techniques such as pruning, quantization, assisted decoding and fine-tuning. This repository contains the code for training, evaluating and visualizing the results with a web leaderboard. Make your bash commands faster, smaller and more efficient! 🚀
 
 ## 🌟 Features
